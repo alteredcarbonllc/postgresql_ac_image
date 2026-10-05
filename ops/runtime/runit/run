@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+exec 2>&1
+cd /var/lib/ac-postgresql
+exec /usr/bin/python3 /usr/local/libexec/ac-postgresql/ac-pg-runtime.py run

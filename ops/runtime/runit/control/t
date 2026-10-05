@@ -1,0 +1,4 @@
+#!/bin/sh
+# Returning zero suppresses runsv's default SIGTERM to attached Podman.
+/usr/bin/python3 /usr/local/libexec/ac-postgresql/ac-pg-runtime.py signal-stop
+exit 0

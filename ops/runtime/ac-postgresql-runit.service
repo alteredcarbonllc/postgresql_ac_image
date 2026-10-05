@@ -1,0 +1,23 @@
+[Unit]
+Description=runit supervisor for existing PostgreSQL 16
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/var/lib/containers/storage /root/podman_network/postgresql1 /var/volumes/log
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/var/lib/ac-postgresql
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/runsv /etc/ac/runit/postgresql
+ExecStop=/usr/bin/sv -w 150 shutdown /etc/ac/runit/postgresql
+Restart=on-failure
+RestartSec=3
+Delegate=yes
+# Never let a timeout send SIGKILL to PostgreSQL/conmon.
+KillMode=process
+TimeoutStopSec=infinity
+
+[Install]
+WantedBy=multi-user.target
