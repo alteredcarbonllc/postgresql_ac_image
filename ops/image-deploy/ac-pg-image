@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+ check|deploy) action="$1-image";;
+ *) echo 'Usage: ac-pg-image {check|deploy} APPROVED_COMMIT' >&2; exit 2;;
+esac
+[ "$#" = 2 ] || exit 2
+exec /usr/bin/python3 /usr/local/libexec/ac-postgresql/config-deploy.py "$action" "$2"
