@@ -27,6 +27,13 @@ class Tests(unittest.TestCase):
                   'mounts':{'/var/lib/postgresql/data':'/data','/var/log':'/logs'},'config_commit':None}
         self.m.r.MOUNTS=self.old['mounts']
         self.m.save(self.m.ACTIVE,self.old)
+    def test_environment_order_and_values(self):
+        self.assertEqual(self.m.env_map(['A=1','B=x=y']),self.m.env_map(['B=x=y','A=1']))
+        self.assertNotEqual(self.m.env_map(['A=1']),self.m.env_map(['A=2']))
+        self.assertNotEqual(self.m.env_map(['A=']),self.m.env_map([]))
+        for items in (['A=1','A=2'], ['A'], ['=value']):
+            with self.assertRaises(RuntimeError): self.m.env_map(items)
+
     def test_sql_exceptions_only_for_test(self):
         self.assertIn('setting could not be applied',self.m.config_sql(True))
         self.assertNotIn('setting could not be applied',self.m.config_sql(False))

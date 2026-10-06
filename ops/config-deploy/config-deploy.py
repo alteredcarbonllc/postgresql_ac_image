@@ -156,9 +156,18 @@ def create_args(old,dest,name):
            '-D','/var/lib/postgresql/data','-c','config_file=/etc/postgresql/postgresql.conf']
     return args
 
+def env_map(items):
+    result={}
+    for item in items or []:
+        key,separator,value=item.partition('=')
+        r.require(separator and key and key not in result,'Malformed or duplicate environment variable')
+        result[key]=value
+    return result
+
 def verify_candidate(c,old):
     r.verify(c,True)
-    for key in ('Hostname','WorkingDir','User','Env'):
+    r.require(env_map(c['Config'].get('Env'))==env_map(old['Config'].get('Env')),'Candidate differs: Env')
+    for key in ('Hostname','WorkingDir','User'):
         r.require(c['Config'].get(key)==old['Config'].get(key),'Candidate differs: '+key)
     for key in ('Privileged','ReadonlyRootfs','UsernsMode','SecurityOpt','CapAdd','CapDrop','ShmSize','Memory','PidsLimit','Ulimits'):
         r.require(c['HostConfig'].get(key)==old['HostConfig'].get(key),'Candidate differs: '+key)
