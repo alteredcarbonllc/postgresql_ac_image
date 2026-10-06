@@ -71,7 +71,10 @@ exec "$bin/postgres" -D /tmp/ac-ci-data -k /tmp -c listen_addresses=""
         run('start',name);ready()
         version=int(sql('SHOW server_version_num'))
         require(160006<=version<170000,'Expected PostgreSQL 16.6 or newer within 16.x')
-        require(sql('SHOW lc_collate')=='C.UTF-8','Unexpected locale')
+        require(sql(
+            "SELECT datcollate, datctype, pg_encoding_to_char(encoding), datlocprovider "
+            "FROM pg_database WHERE datname = current_database()"
+        )=='C.UTF-8|C.UTF-8|UTF8|c','Unexpected database locale or encoding')
         sql('CREATE TABLE public.ci_probe(id integer PRIMARY KEY, value text NOT NULL); INSERT INTO public.ci_probe VALUES (1,\'persisted\');')
         run('exec',name,BIN+'/pg_dump','-h','/tmp','-U','postgres','-Fc','-f','/tmp/probe.dump','postgres')
         run('exec',name,BIN+'/createdb','-h','/tmp','-U','postgres','ci_restore')
