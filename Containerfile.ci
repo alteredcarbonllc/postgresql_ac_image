@@ -1,0 +1,31 @@
+# Keep the same distribution family and PostgreSQL major version as production.
+FROM ubuntu:24.04
+
+RUN groupadd --gid 103 postgres \
+ && useradd --uid 101 --gid 103 --home-dir /var/lib/postgresql --shell /bin/bash postgres \
+ && mkdir -p /etc/postgresql-common \
+ && printf 'create_main_cluster = false\n' > /etc/postgresql-common/createcluster.conf \
+ && printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
+ && chmod 0755 /usr/sbin/policy-rc.d \
+ && apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      postgresql-16 postgresql-contrib \
+ && rm -f /usr/sbin/policy-rc.d \
+ && rm -rf /var/lib/apt/lists/* \
+ && test "$(id -u postgres)" = 101 \
+ && test "$(id -g postgres)" = 103 \
+ && test ! -e /var/lib/postgresql/16/main/PG_VERSION \
+ && install -d -o postgres -g postgres -m 0700 /var/lib/postgresql/data \
+ && install -d -o postgres -g postgres -m 0775 /var/run/postgresql \
+ && mkdir -p /usr/local/share/ac-postgresql \
+ && dpkg-query -W > /usr/local/share/ac-postgresql/packages.txt \
+ && /usr/lib/postgresql/16/bin/postgres --version > /usr/local/share/ac-postgresql/version.txt
+
+ENV PATH=/usr/lib/postgresql/16/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LABEL org.opencontainers.image.title="AC PostgreSQL 16" \
+      org.opencontainers.image.source="https://github.com/alteredcarbonllc/postgresql_ac_image"
+EXPOSE 5432
+STOPSIGNAL SIGINT
+USER postgres
+WORKDIR /
+CMD ["/usr/lib/postgresql/16/bin/postgres", "-D", "/var/lib/postgresql/data"]

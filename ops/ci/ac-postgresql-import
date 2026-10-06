@@ -1,0 +1,137 @@
+#!/usr/bin/python3
+"""Import one CI image into rootful storage. Does not manage containers."""
+import fcntl
+import hashlib
+import json
+import os
+import pathlib
+import pwd
+import re
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+INBOX = '/var/spool/ac-postgresql/inbox'
+STATE = '/var/lib/ac-postgresql/imports'
+MAX_BYTES = 3 * 1024 * 1024 * 1024
+PODMAN = '/usr/local/bin/podman'
+
+
+def manifest_info(archive, revision):
+    members = archive.getmembers()
+    if sum(m.size for m in members) > MAX_BYTES or any(m.size < 0 for m in members):
+        raise ValueError('expanded archive exceeds size limit')
+    if len(members) > 10000:
+        raise ValueError('too many archive members')
+    by_name = {}
+    for member in members:
+        name = member.name
+        if name in by_name or name.startswith('/') or '..' in pathlib.PurePosixPath(name).parts:
+            raise ValueError('unsafe or duplicate archive path')
+        # Legacy compatibility links may exist outside the manifest's files.
+        # They are never extracted or copied into the sanitized archive.
+        if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
+            raise ValueError('archive special file is not allowed: ' + name)
+        by_name[name] = member
+
+    def read_json(name):
+        member = by_name[name]
+        if not member.isfile() or member.size > 2 * 1024 * 1024:
+            raise ValueError('JSON member must be a small regular file: ' + name)
+        with archive.extractfile(member) as source:
+            data = source.read()
+        return json.loads(data), data
+
+    manifest, _ = read_json('manifest.json')
+    reference = 'localhost/postgresql-ac:' + revision
+    if not isinstance(manifest, list) or len(manifest) != 1:
+        raise ValueError('exactly one image is required')
+    item = manifest[0]
+    if item.get('RepoTags') != [reference]:
+        raise ValueError('unexpected image tag')
+    config, raw = read_json(item['Config'])
+    if config.get('config', {}).get('Labels', {}).get('org.opencontainers.image.revision') != revision:
+        raise ValueError('revision label does not match')
+    layers = item['Layers']
+    if not isinstance(layers, list) or not layers:
+        raise ValueError('missing image layers')
+    selected = ['manifest.json', item['Config']] + layers
+    if len(set(selected)) != len(selected):
+        raise ValueError('duplicate image members')
+    for name in selected:
+        if not by_name[name].isfile():
+            raise ValueError('manifest references a non-regular file: ' + name)
+    return reference, 'sha256:' + hashlib.sha256(raw).hexdigest(), [by_name[n] for n in selected]
+
+
+def main():
+    if os.geteuid() != 0:
+        raise ValueError('run through sudo as root')
+    if len(sys.argv) != 2 or not re.fullmatch(r'[0-9a-f]{40}', sys.argv[1]):
+        raise ValueError('usage: ac-postgresql-import FULL_40_CHARACTER_COMMIT_SHA')
+    revision = sys.argv[1]
+    root = pwd.getpwuid(0).pw_dir
+    env = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+           'HOME': root, 'USER': 'root', 'LOGNAME': 'root', 'LANG': 'C.UTF-8'}
+    os.chdir('/')
+    os.umask(0o077)
+    # STATE and its parents must be root-owned; the installer creates them.
+    with open(STATE + '/import.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with tempfile.TemporaryDirectory(prefix='import-', dir=STATE) as work:
+            snapshot = work + '/source.tar'
+            fd = os.open(INBOX + '/' + revision + '.tar', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as source:
+                import stat
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_BYTES:
+                    raise ValueError('archive must be a regular file, at most 3 GiB')
+                with open(snapshot, 'xb') as output:
+                    total = 0
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_BYTES:
+                            raise ValueError('archive exceeds 3 GiB')
+                        output.write(chunk)
+            clean = work + '/image.tar'
+            with tarfile.open(snapshot, 'r:') as archive:
+                reference, expected_id, selected = manifest_info(archive, revision)
+                # Only the checked manifest, configuration and layers reach Podman.
+                # Discard optional repositories metadata and all unrelated members.
+                with tarfile.open(clean, 'w') as output:
+                    for member in selected:
+                        header = tarfile.TarInfo(member.name)
+                        header.size = member.size
+                        header.mode = 0o600
+                        with archive.extractfile(member) as source:
+                            output.addfile(header, source)
+            command = [PODMAN, '--remote=false']
+            old = subprocess.run(command + ['image', 'inspect', '--format', '{{.Id}}', reference],
+                                 env=env, capture_output=True, text=True)
+            if old.returncode == 0 and old.stdout.strip().removeprefix('sha256:') != expected_id[7:]:
+                raise ValueError('this commit tag already refers to another image; refusing overwrite')
+            subprocess.run(command + ['load', '--input', clean], env=env, check=True)
+            actual = subprocess.check_output(command + ['image', 'inspect', '--format', '{{.Id}}', reference],
+                                             env=env, text=True).strip()
+            if actual.removeprefix('sha256:') != expected_id[7:]:
+                raise ValueError('loaded image ID mismatch')
+            receipt = {'revision': revision, 'image': reference, 'image_id': expected_id}
+            pending = STATE + '/' + revision + '.json.tmp'
+            with open(pending, 'w') as output:
+                json.dump(receipt, output)
+                output.write('\n')
+            os.replace(pending, STATE + '/' + revision + '.json')
+            print('IMPORT_OK: ' + reference + ' ' + expected_id)
+            print('PostgreSQL production container was not stopped or replaced')
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, KeyError, TypeError, OSError, tarfile.TarError, subprocess.SubprocessError) as error:
+        print('IMPORT_FAILED: ' + str(error), file=sys.stderr)
+        sys.exit(1)
